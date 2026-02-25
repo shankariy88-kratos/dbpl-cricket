@@ -1,0 +1,1615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>🏏 DBPL Game</title>
+<!-- 
+  ═══ CHANGELOG ═══
+  v28 - Increased mistimed shot catch-out probability from 25% to 50%
+  v29 - DRY refactor (zero gameplay impact):
+        #1  getSR() — Strike rate calc extracted (scoreboard + game over)
+        #2  getBadge(d) — Badge text/width extracted (lottery card + banner)
+        #3  getSpeedText(d) — Speed display extracted (3 places)
+        #4  drawCtrlBg() — Control button base circle (audio + pause)
+        #5  goldBtnGrad() — Golden button gradient (bat/pause/menu)
+        #6  decayNoise() — Noise fill lambda factory (5 audio calls)
+        #7  resetFielders() — Fielder position reset (startGame + celebrate)
+        #8  drawFld(i) — Fielder draw shorthand (6 calls → helper)
+        #9  Runs tier lookup — goScore category mapping consolidated
+        #10 MYSTERY_MAP — Mystery delivery resolution via config map
+        #11 isPc duplication eliminated by #2 (getBadge)
+  v30 - SRP + readability refactor (zero gameplay impact):
+        A1  update() split → updateLottery(), updateBallFlight(), updateSixArc(),
+            assignChaser(), moveChaser(), updatePostHit(), updateParticles()
+        A2  drawBatsman() split → drawBatWithHands(), drawHelmet()
+        A3  drawBowler() split → drawBowlerArms()
+        A4  drawLottery() split → drawLotteryCard(), drawDeliveryBanner()
+        A5  drawHitBall() split → drawFourTrail(), drawSixTrail()
+        A6  drawStands() split → drawCrowd(), drawAdBanner()
+        A7  drawBalloons() split → drawParticlesFx()
+        B1  Extracted DT=0.016 constant (9 usages)
+        B2  Extracted SWEET_SPOT=0.77 constant
+        B3  Improved line spacing in extracted functions
+        B4  Added section comments in input handler
+  v31 - Cyclomatic complexity + nested loop reduction (zero gameplay impact):
+        C1  update() phase dispatch → PHASE_UPDATE map (CC 25→5)
+        C2  updatePostHit() → checkBoundaryExit(), checkFielderCatch() (CC 16→7)
+        C3  goScore() → SCORE_TIERS config + spawnSixParticles() (CC 14→5)
+        C4  drawBatBtn() → pre-computed state object (CC 13→5)
+        C5  drawFielder() → getFielderAnim() state extraction (CC 14→8)
+        C6  drawBowler() → getBowlerState() phase logic (CC 15→8)
+        N1  drawFloodlights() → FLOODLIGHTS pre-computed array (nested for→flat forEach)
+        N2  drawSixTrail() → merged 2 loops into single pass
+  v32 - Efficient data structures + RSTI refactor (zero gameplay/UI impact):
+        DS1 particles array → compactArr() in-place filter (zero GC alloc per frame)
+        DS2 balloons array → compactArr() in-place filter (zero GC alloc per frame)
+        DS3 drawSky() star positions → hoisted to const STARS (avoids per-frame allocation)
+        DS4 drawStumps() broken animation data → hoisted to const STUMP_BROKEN_POS/STUMP_BAIL_POS
+        DS5 drawCelText() tier iteration → hoisted to const CEL_TIERS
+        R1  Revisited all hot-path inline array literals → hoisted to module-level constants
+        R2  Revisited drawCelText: mixed celebration + dismissal concerns
+        S1  Split drawCelText() → drawCelebration() + drawDismissalText() (SRP)
+        T1  Tried in-place compaction vs .filter() → introduced compactArr() utility
+        I1  Introduced compactArr(arr, pred) — reusable zero-alloc array compaction
+        I2  Introduced STARS, STUMP_BROKEN_POS, STUMP_BAIL_POS, CEL_TIERS constants
+  v33 - Senior architect review — bloat, dead code, inefficient patterns (zero UI impact):
+        B1  sndBat() dead variables t0, sr removed
+        B2  mkOsc() dead array-freq branch removed (no caller uses it)
+        B3  getBadge() dead ternary (wide?38:38) → 38
+        B7  PHASE_UPDATE dead lambda wrappers removed (return values discarded by caller)
+        I5  sndTick() inline lambda → existing decayNoise(200,0.08) helper
+        A1  drawBalloons() physics → extracted to updateBalloons() (fixes pause drift bug)
+        I1  getBP() per-call {x,y,sz} alloc → reusable _bp object (10 allocs/frame eliminated)
+        I7  drawStumps() stumpGrad closure per frame → inlined linGrad call
+        B8  drawLotteryCard() lotIdx+DELS.length*100 defensive guard removed (lotIdx never negative)
+        CL  5× redundant textAlign/globalAlpha resets before X.restore() removed
+  v34 - Security-focused QA review — edge cases, race conditions, resilience:
+        E1  CRITICAL: goDismiss setTimeout race — stale 1800ms timer forced gameover
+            mid-new-game if player restarted quickly after dismissal. Fixed via tracked
+            _timers[] array + clearTimeout in startGame.
+        E3  CRITICAL: startGame didn't clear particles[], balloons[], sixTrail[],
+            or dismissal — visual artifacts from prior game bled into new game.
+        E4  HIGH: All audio primitives (mkNoise, mkOsc, mkCrowd, sndSettle, sndSix
+            inline oscillators) now wrapped in try/catch. Unhandled AudioContext
+            errors (mobile restrictions, suspended context, rate limiting) previously
+            crashed the entire update→render loop. Zero try/catch existed before.
+        E4b HIGH: initAudio() AudioContext constructor wrapped in try/catch — can
+            throw on platforms with strict autoplay policies.
+        E5  MEDIUM: Scoreboard auto-shrinks font for scores >999 (padStart(3,'0')
+            didn't truncate; 4-digit scores overflowed 130px board width).
+        E6  LOW: Added safety documentation on _bp reusable object contract — shared
+            singleton that callers must read before next getBP call.
+  v35 - Feature: 120-ball innings limit + milestone bat raise animation:
+        F1  MAX_BALLS=120: Innings ends after 120 balls with 'पारी समाप्त!' screen.
+            phaseCelebrate checks ballsFaced>=MAX_BALLS after each scoring delivery.
+            Scoreboard + game-over screen show balls as 'N/120 बॉल'.
+        F2  Bat raise animation at every 50-run milestone (50,100,150,200,250,300+).
+            Detection: goScore tracks prevScore→score crossing 50-run boundaries.
+            Animation: drawBatWithHands receives raise parameter → bat rotates upward
+            over 0.4s, holds for ~2.6s with sparkle particles around batsman.
+            drawMilestone() renders glow backdrop + milestone card with Hindi text.
+            Unique labels per tier (अर्धशतक/शतक/डेढ़ शतक/दोहरा शतक/ढाई सौ/तिहरा शतक)
+            with dynamic fallback for 350+ ('{N} रन!'). Stadium roar on milestone.
+            phaseCelebrate extends hold duration when bat raise is active.
+  v36 - Performance hardening (zero gameplay/UI impact — resilient on low-end devices):
+        P1  Cache static gradients (sky, outfield, pitch) at init — 3 gradient objects
+            created once instead of 60×/sec (~180 gradient allocs/sec eliminated).
+        P2  Pre-render idle crowd (150+ entities) to offscreen canvas — blit single
+            drawImage per frame instead of 150+ individual draw calls. Live draw only
+            during celebration phase (phaseT<2). Biggest single CPU savings.
+        P3  Pre-render floodlights (poles, bulbs, glow, light cones) to offscreen
+            canvas — fully static scene, zero per-frame draw calls.
+        P4  Pre-render star field to offscreen canvas — blit with oscillating
+            globalAlpha for twinkle effect instead of per-star alpha loop.
+        P5  CRITICAL: Eliminated ALL shadowBlur usage (lottery card, delivery banner,
+            celebrations, dismissal text, milestone, menu, stump bails). Replaced with
+            glowRect()/glowDot() helpers using radial gradients + alpha rects.
+            shadowBlur triggers software gaussian blur per frame — single most
+            expensive canvas2D operation, especially in iframes and mobile browsers.
+        P6  Added mkOC()/glowRect()/glowDot() reusable performance helpers.
+            buildRenderCaches() runs once at startup to populate offscreen layers.
+  v37 - Faster lottery pacing (zero gameplay/UI impact beyond timing):
+        L1  Spin animation shortened: full-speed phase 0.8s→0.5s, deceleration
+            window 1.5s→1.0s. Lottery settles within ~1.2-1.5s (was ~2-2.4s).
+        L2  Reveal hold time rebalanced: 2s→0.5s progressive by ball 30
+            (was 3s→1s). Ball 1≈1.95s, Ball 20≈1.0s, Ball 30+≈0.5s.
+            Progressive reduction logic preserved — still driven by ballsFaced.
+-->
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Teko:wght@400;500;600;700&family=Baloo+2:wght@500;600;700;800&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{background:#080818;display:flex;align-items:center;justify-content:center;min-height:100vh;overflow:hidden}
+  .frame{position:relative;width:390px;height:760px;overflow:hidden;border-radius:20px;box-shadow:0 0 0 2px #1a1a30}
+  canvas{display:block;width:100%;height:100%;cursor:pointer}
+  @media(max-width:420px){.frame{width:100vw;height:100vh;border-radius:0;margin:0}}
+</style>
+</head>
+<body>
+<div class="frame"><canvas id="c"></canvas></div>
+<script>
+const cv=document.getElementById('c');let X=cv.getContext('2d');
+const DP=2,W=390,H=760,PI2=Math.PI*2;
+const DT=0.016;         // Frame delta (~60fps)
+const SWEET_SPOT=0.77;  // Perfect timing point for bat swing
+cv.width=W*DP;cv.height=H*DP;X.scale(DP,DP);
+
+// ═══ CANVAS DRAW HELPERS ═══
+function dot(x,y,r){X.beginPath();X.arc(x,y,r,0,PI2);X.fill();}
+function circ(x,y,r){X.beginPath();X.arc(x,y,r,0,PI2);X.stroke();}
+function oval(x,y,rx,ry,rot){X.beginPath();X.ellipse(x,y,rx,ry,rot||0,0,PI2);X.fill();}
+function rr(x,y,w,h,r){X.beginPath();X.roundRect(x,y,w,h,r);X.fill();}
+function rrs(x,y,w,h,r){X.beginPath();X.roundRect(x,y,w,h,r);X.stroke();}
+function radGrad(x0,y0,r0,x1,y1,r1,stops){
+  const g=X.createRadialGradient(x0,y0,r0,x1,y1,r1);
+  for(let i=0;i<stops.length;i+=2)g.addColorStop(stops[i],stops[i+1]);
+  return g;
+}
+function linGrad(x0,y0,x1,y1,stops){
+  const g=X.createLinearGradient(x0,y0,x1,y1);
+  for(let i=0;i<stops.length;i+=2)g.addColorStop(stops[i],stops[i+1]);
+  return g;
+}
+
+// ═══ AUDIO ENGINE ═══
+let AC=null,audioOn=true;
+function initAudio(){if(!AC)try{AC=new(window.AudioContext||window.webkitAudioContext)();}catch(e){}}
+function noAudio(){return !AC||!audioOn;}
+
+// Audio primitive: noise burst → optional filter → gain → destination
+function mkNoise(dur,fillFn,filterCfg,vol){
+  if(noAudio()||dur<=0)return;
+  try{
+  const sr=AC.sampleRate,len=~~(sr*dur),buf=AC.createBuffer(1,len,sr),d=buf.getChannelData(0);
+  for(let i=0;i<len;i++)d[i]=fillFn(i,sr);
+  const s=AC.createBufferSource();s.buffer=buf;
+  let node=s;
+  if(filterCfg){
+    const f=AC.createBiquadFilter();f.type=filterCfg.type;f.frequency.value=filterCfg.freq;
+    if(filterCfg.Q)f.Q.value=filterCfg.Q;if(filterCfg.gain)f.gain.value=filterCfg.gain;
+    node=node.connect(f);
+  }
+  const g=AC.createGain();g.gain.value=vol;
+  node.connect(g).connect(AC.destination);s.start();return s;
+  }catch(e){}
+}
+
+// Audio primitive: oscillator with envelope
+function mkOsc(type,freq,dur,vol,freqRamp){
+  if(noAudio())return;
+  try{
+  const t0=AC.currentTime,o=AC.createOscillator();o.type=type;
+  o.frequency.value=freq;
+  if(freqRamp){o.frequency.setValueAtTime(freqRamp[0],t0);o.frequency.exponentialRampToValueAtTime(freqRamp[1],t0+freqRamp[2]);}
+  const g=AC.createGain();g.gain.setValueAtTime(vol,t0);g.gain.exponentialRampToValueAtTime(0.001,t0+dur);
+  o.connect(g).connect(AC.destination);o.start(t0);o.stop(t0+dur+0.01);
+  }catch(e){}
+}
+
+// Audio primitive: stereo crowd noise (shared by sndFour/sndSix/sndGroan)
+function mkCrowd(dur,envFn,modFn,vol,bpFreq,bpQ){
+  if(noAudio())return;
+  try{
+  const sr=AC.sampleRate,len=~~(sr*dur),buf=AC.createBuffer(2,len,sr);
+  for(let ch=0;ch<2;ch++){const d=buf.getChannelData(ch);
+    for(let i=0;i<len;i++){const t=i/sr;
+      d[i]=(Math.random()*2-1)*envFn(t)*modFn(t,ch)*vol;
+    }}
+  const s=AC.createBufferSource();s.buffer=buf;
+  const bp=AC.createBiquadFilter();bp.type='bandpass';bp.frequency.value=bpFreq;bp.Q.value=bpQ;
+  const g=AC.createGain();g.gain.value=1;
+  s.connect(bp).connect(g).connect(AC.destination);s.start();
+  }catch(e){}
+}
+
+// --- Bat crack (4-layer "THOCK") ---
+function sndBat(){
+  if(noAudio())return;
+  // Layer 1: Contact transient
+  mkNoise(0.008, decayNoise(800), null, 0.7);
+  // Layer 2: Woody resonance
+  mkOsc('triangle',820,0.08,0.45);
+  // Layer 3: Low punch
+  mkOsc('sine',350,0.07,0.35,[350,120,0.06]);
+  // Layer 4: Bright crack overtone
+  mkNoise(0.04, decayNoise(120,0.5),
+    {type:'highpass',freq:1500}, 0.3);
+}
+
+// --- Ball pitching ---
+function sndPitch(){
+  mkNoise(0.08, decayNoise(60,0.35),
+    {type:'lowpass',freq:350}, 0.4);
+}
+
+// --- Stumps shattered ---
+function sndStumps(){
+  if(noAudio())return;
+  // Multiple stump hits
+  for(let i=0;i<5;i++)setTimeout(()=>{
+    mkOsc('triangle',500+i*180+Math.random()*600,0.35,0.25);
+  },i*25);
+  // Wood clatter
+  mkNoise(0.4, decayNoise(12,0.6),
+    {type:'bandpass',freq:700,Q:0.4}, 1);
+  // Bass thud
+  mkOsc('sine',100,0.15,0.3,[100,30,0.12]);
+}
+
+// --- Stadium ROAR for 4 ---
+function sndFour(){
+  mkCrowd(1.4,
+    t=>t<0.08?t/0.08:Math.exp(-(t-0.08)*2.5),
+    (t,ch)=>0.6+0.4*Math.sin(t*11+ch*3),
+    0.65, 1200, 0.35);
+}
+
+// --- Stadium ERUPTION for 6 ---
+function sndSix(){
+  mkCrowd(2.8,
+    t=>t<0.05?t/0.05:t<0.6?1:Math.exp(-(t-0.6)*1.5),
+    (t,ch)=>0.5+0.5*Math.sin(t*8.3+ch*4)*Math.sin(t*13.7),
+    0.8, 1400, 0.3);
+  // Whistles
+  [0.3,0.65].forEach((delay,i)=>setTimeout(()=>{
+    if(noAudio())return;
+    try{
+    const t0=AC.currentTime,o=AC.createOscillator();o.type='sine';
+    o.frequency.setValueAtTime(1800+i*300,t0);
+    o.frequency.linearRampToValueAtTime(2400+i*200,t0+0.15);
+    o.frequency.linearRampToValueAtTime(1900+i*300,t0+0.3);
+    const g=AC.createGain();g.gain.setValueAtTime(0.06,t0);
+    g.gain.exponentialRampToValueAtTime(0.001,t0+0.35);
+    o.connect(g).connect(AC.destination);o.start();o.stop(t0+0.35);
+    }catch(e){}
+  },delay*1000));
+}
+
+// --- Crowd GROAN ---
+function sndGroan(){
+  mkCrowd(1.8,
+    t=>t<0.15?t/0.15:Math.exp(-(t-0.15)*1.8),
+    (t,ch)=>0.7+0.3*Math.sin(t*5+ch),
+    0.45, 600, 0.4);
+}
+
+// --- Lottery tick ---
+function sndTick(){
+  if(noAudio())return;
+  mkOsc('square',1400+Math.random()*600,0.03,0.06);
+  mkNoise(0.012, decayNoise(200,0.08), null, 1);
+}
+
+// --- Lottery settle (dramatic reveal) ---
+function sndSettle(){
+  if(noAudio())return;
+  try{
+  // Sweep
+  const t0=AC.currentTime,sweep=AC.createOscillator();sweep.type='sawtooth';
+  sweep.frequency.setValueAtTime(300,t0);sweep.frequency.exponentialRampToValueAtTime(2000,t0+0.3);
+  const sg=AC.createGain();sg.gain.setValueAtTime(0.03,t0);sg.gain.exponentialRampToValueAtTime(0.001,t0+0.35);
+  const sf=AC.createBiquadFilter();sf.type='bandpass';sf.frequency.value=1200;sf.Q.value=0.5;
+  sweep.connect(sf).connect(sg).connect(AC.destination);sweep.start();sweep.stop(t0+0.35);
+  }catch(e){}
+  // Chime notes
+  [800,1200,1600].forEach((freq,i)=>setTimeout(()=>{
+    if(!AC)return;mkOsc('sine',freq,0.2,0.06);
+  },[0,100,180][i]));
+  // Final noise burst
+  setTimeout(()=>mkNoise(0.1,decayNoise(35,0.2),null,1),280);
+}
+
+// ═══ GAME STATE ═══
+let T=0,score=0,shake=0,particles=[],balloons=[],ballsFaced=0,dismissal='';
+let paused=false;
+let camY=0,tCamY=0;
+let gameState='menu',menuT=0,gameOverT=0;
+let phase='lottery',phaseT=0;
+let bowlerArm=0,ballVis=false,ballT=0,ballX=0,ballY=0,ballSz=3;
+let bowlRunT=0;
+let canHit=false,batSwing=0,batSwT=0;
+let swingActive=false,swingConnected=false,tappedThisBall=false,misTimed=false;
+let hitBX=0,hitBY=0,hitBVX=0,hitBVY=0,hitBActive=false,hitPow=0,hitDir=0;
+let sixArc=false,sixArcT=0,sixTrail=[],sixStartX=0,sixStartY=0,sixEndX=0,sixEndY=0,sixPeakY=0;
+let pitchDone=false,lastRuns=0;
+const SIX_ARC_DUR=1.8;
+const MAX_BALLS=120;
+// Pending timer IDs — cleared on game restart to prevent stale callbacks
+let _timers=[];
+// Bat raise milestone state
+let batRaise=false,batRaiseT=0,batRaiseMilestone=0;
+
+// ═══ DELIVERIES ═══
+const DELS=[
+  {id:'legspin',  name:'लेग स्पिन',   type:'spin', speed:85,  color:'#a855f7'},
+  {id:'offspin',  name:'ऑफ़ स्पिन',   type:'spin', speed:82,  color:'#6366f1'},
+  {id:'topspin',  name:'टॉप स्पिन',   type:'spin', speed:90,  color:'#ec4899'},
+  {id:'googly',   name:'गुगली',       type:'spin', speed:88,  color:'#f43f5e'},
+  {id:'inswing',  name:'इनस्विंग',    type:'pace', speed:140, color:'#ef4444'},
+  {id:'outswing', name:'आउटस्विंग',   type:'pace', speed:138, color:'#f97316'},
+  {id:'slower',   name:'स्लोअर बॉल',  type:'pace', speed:112, color:'#eab308'},
+  {id:'seam',     name:'सीम',         type:'pace', speed:145, color:'#22c55e'},
+  {id:'cutter',   name:'कटर',         type:'pace', speed:130, color:'#06b6d4'},
+  {id:'mystery_spin', name:'स्पिन - ???', type:'spin', speed:0, color:'#d946ef'},
+  {id:'mystery_pace', name:'फ़ास्ट - ???', type:'pace', speed:0, color:'#f59e0b'},
+  {id:'mystery_any',  name:'???',         type:'spin', speed:0, color:'#ffffff'},
+];
+let curDel=DELS[0];
+
+// Lottery state
+let lotIdx=0,lotSpd=20,lotSettled=false,lotT=0,lotFinal=0,lotAccum=0,lotSettleT=0;
+let chaserIdx=-1;
+let wasMystery=false,mysteryDel=null;
+
+// ═══ LAYOUT ═══
+const PIT_TY=310,PIT_BY=660,PIT_TW=55,PIT_BW=240;
+const STB_Y=PIT_TY+15,STS_Y=PIT_BY-30,BAT_Y=STS_Y-100,BAT_X=W/2-55;
+const BOUND_Y=270,GND_TOP=240;
+
+// ═══ DRY HELPERS ═══
+function getSR(){return ballsFaced>0?((score/ballsFaced)*100).toFixed(1):'0.0';}
+function getBadge(d,wide){const isPc=d.type==='pace';return{text:d.id==='mystery_any'?'???':isPc?'पेस':'स्पिन',w:d.id==='mystery_any'?34:isPc?(wide?42:40):38};}
+function getSpeedText(d,space){return d.speed?(d.speed+(space?' km/h':'km/h')):'???';}
+function goldBtnGrad(cx,cy,r,off){off=off||4;return radGrad(cx-off,cy-off,2,cx,cy,r,[0,'#ffe566',0.5,C.gold,1,'#c08508']);}
+function decayNoise(rate,amp){amp=amp||1;return(i,sr)=>(Math.random()*2-1)*Math.exp(-(i/sr)*rate)*amp;}
+function resetFielders(){fld.forEach(f=>{f.x=f.hx;f.y=f.hy;});}
+// In-place array compaction — avoids creating new array every frame (GC-friendly)
+function compactArr(arr,pred){let w=0;for(let r=0;r<arr.length;r++){if(pred(arr[r]))arr[w++]=arr[r];}arr.length=w;}
+
+// ═══ GLOW HELPERS (P5 — replaces expensive shadowBlur with gradient approximation) ═══
+function glowRect(x,y,w,h,r,color,spread){
+  X.save();X.globalAlpha=0.3;X.fillStyle=color;
+  rr(x-spread,y-spread,w+spread*2,h+spread*2,r+spread*0.5);X.restore();
+}
+function glowDot(cx,cy,r,color){
+  X.save();X.fillStyle=radGrad(cx,cy,r*0.1,cx,cy,r,[0,color,1,'rgba(0,0,0,0)']);
+  dot(cx,cy,r);X.restore();
+}
+
+// ═══ OFFSCREEN CANVAS CACHE (P2-P4 — static layers rendered once) ═══
+function mkOC(w,h){
+  const c=document.createElement('canvas');c.width=w*DP;c.height=h*DP;
+  const ctx=c.getContext('2d');ctx.scale(DP,DP);return{c,ctx};
+}
+let _ocFlood=null,_ocCrowdIdle=null,_ocStars=null;
+
+const C={skyTop:'#0a0628',skyMid:'#1a1050',dusk:'#c84830',
+  grass:'#1a7828',grassL:'#22902e',grassD:'#0f5818',
+  pitch:'#c8a85c',pitchL:'#ddc07a',pitchD:'#a08040',
+  ball:'#cc1111',gold:'#f7c948',mi:'#004BA0',rcb:'#D4212C',csk:'#FFCB05',
+  skin:'#d4a574',skinD:'#b8845a',hair:'#1a0e05',wh:'#eee',boardBg:'#0a2660'};
+
+// ═══ CACHED GRADIENTS (P1 — created once, reused every frame) ═══
+const G_SKY=linGrad(0,0,0,GND_TOP+20,[0,C.skyTop,0.55,C.skyMid,0.85,'#3a1848',1,C.dusk]);
+const G_OUTFIELD=linGrad(0,GND_TOP,0,H,[0,C.grassD,0.15,C.grass,0.5,C.grassL,1,'#2ab840']);
+const G_PITCH=linGrad(0,PIT_TY,0,PIT_BY,[0,C.pitchD,0.3,C.pitch,0.7,C.pitchL,1,'#ddc480']);
+
+// ═══ CROWD (generated once) ═══
+const JERSEY_COLORS=['#e74c3c','#3498db','#f39c12','#2ecc71','#9b59b6','#e67e22','#1abc9c','#fff','#ff6b6b','#ffd93d','#004BA0','#D4212C','#FFCB05','#ff9ff3'];
+const SKIN_TONES=['#d4a574','#c9956a','#dbb08a','#a87850','#8d6040','#e8c49a'];
+const pick=arr=>arr[~~(Math.random()*arr.length)];
+
+const crowd=[];
+for(let r=0;r<4;r++){const n=30+r*5;
+  for(let i=0;i<n;i++){
+    crowd.push({x:i*(W/(n-1)),row:r,j:pick(JERSEY_COLORS),sk:pick(SKIN_TONES),
+      h:6+Math.random()*3,ph:Math.random()*PI2,sp:0.5+Math.random()*2,
+      hat:Math.random()>.6,hatC:pick(JERSEY_COLORS),flag:Math.random()>.9,
+      flagC:Math.random()>.5?C.mi:(Math.random()>.5?C.rcb:C.csk)});
+  }}
+
+// ═══ FIELDERS ═══
+const fld=[
+  {x:45,y:390,hx:45,hy:390},{x:350,y:385,hx:350,hy:385},     // Cover / Mid Wicket (closest)
+  {x:120,y:310,hx:120,hy:310},{x:275,y:305,hx:275,hy:305},   // Mid Off / Mid On (medium)
+  {x:100,y:250,hx:100,hy:250},{x:290,y:250,hx:290,hy:250}];  // Long Off / Long On (boundary)
+
+// ═══ TIMING ZONES — data-driven swing result ═══
+// Sorted by threshold (ascending). First match wins.
+const SWING_ZONES=[
+  {thresh:0.025, pow:1.6,  dirSpread:1.0, mis:false}, // SIX
+  {thresh:0.04,  pow:1.1,  dirSpread:1.5, mis:false}, // FOUR
+  {thresh:0.06,  powBase:0.4, powRand:0.4, dirSpread:2.2, mis:false}, // 1-3 runs
+  {thresh:0.12,  powBase:0.15,powRand:0.3, dirSpread:3.0, mis:true},  // Mistimed (catch chance)
+];
+
+// ═══ BALLOON COLOR PALETTES ═══
+const BALLOON_COLORS={
+  6:['#ff2d78','#ff45a8','#e91e8c','#f7c948','#fff'],
+  4:['#22c55e','#4ade80','#16a34a','#f7c948'],
+  0:['#f7c948','#ffd93d','#ffb703'], // default for 1-3 runs
+};
+
+// Mystery delivery resolution: [offset, count] into DELS array
+const MYSTERY_MAP={mystery_spin:[0,4],mystery_pace:[4,5],mystery_any:[0,9]};
+
+// ═══ GAME LOGIC ═══
+function startGame(){
+  // Cancel any pending dismissal/audio timers from previous game
+  _timers.forEach(clearTimeout);_timers.length=0;
+  gameState='playing';score=0;ballsFaced=0;phase='lottery';phaseT=0;dismissal='';
+  ballVis=false;hitBActive=false;batSwing=0;canHit=false;chaserIdx=-1;tCamY=0;camY=0;bowlRunT=0;
+  swingActive=false;swingConnected=false;batSwT=0;
+  sixArc=false;sixTrail=[];particles.length=0;balloons.length=0;
+  batRaise=false;batRaiseT=0;batRaiseMilestone=0;
+  resetFielders();
+  startLottery();
+}
+
+function startLottery(){
+  phase='lottery';phaseT=0;lotT=0;lotAccum=0;lotSettleT=0;
+  lotSpd=18+Math.random()*8;lotSettled=false;
+  lotFinal=~~(Math.random()*DELS.length);
+  lotIdx=~~(Math.random()*DELS.length);
+}
+
+function goRunup(){
+  let del=DELS[lotFinal];
+  wasMystery=del.id.startsWith('mystery');
+  mysteryDel=wasMystery?del:null;
+  const mr=MYSTERY_MAP[del.id];if(mr)del=DELS[mr[0]+~~(Math.random()*mr[1])];
+  curDel=del;phase='runup';phaseT=0;bowlRunT=0;bowlerArm=0;
+  ballVis=false;hitBActive=false;canHit=false;pitchDone=false;batSwing=0;batSwT=0;
+  chaserIdx=-1;sixArc=false;sixTrail=[];swingActive=false;swingConnected=false;
+}
+
+function goBowl(){phase='bowling';phaseT=0;bowlerArm=0;bowlRunT=1;}
+function goRelease(){phase='ballFlight';phaseT=0;ballT=0;ballVis=true;canHit=false;tappedThisBall=false;ballsFaced++;}
+
+function triggerSwing(){
+  swingActive=true;swingConnected=false;misTimed=false;batSwing=0;batSwT=0;
+  sndBat();
+  const sweet=Math.abs(ballT-SWEET_SPOT);
+  for(const z of SWING_ZONES){
+    if(sweet<z.thresh){
+      swingConnected=true;misTimed=z.mis;
+      hitPow=z.pow||(z.powBase+Math.random()*z.powRand);
+      hitDir=(Math.random()-.5)*z.dirSpread;
+      return;
+    }
+  }
+  // No zone matched → complete miss
+}
+
+function goHit(){
+  phase='hit';phaseT=0;ballVis=false;canHit=false;
+  hitBX=W/2;hitBY=BAT_Y+30;hitBVX=hitDir*3.5;hitBVY=-hitPow*5.5;hitBActive=true;
+}
+
+function goPostHit(){
+  phase='postHit';phaseT=0;tCamY=-25*hitPow;chaserIdx=-1;
+  if(hitPow>=1.5){
+    sixArc=true;sixArcT=0;sixTrail=[];
+    sixStartX=hitBX;sixStartY=hitBY;
+    sixEndX=W/2+hitDir*120+Math.random()*60-30;
+    sixEndY=170+Math.random()*30;
+    sixPeakY=-250-Math.random()*80;
+  }else{sixArc=false;}
+}
+
+// Score tier config: [sound, balloonCount for tier, shake]
+const SCORE_TIERS={
+  6:{snd:sndSix, nBase:10, shake:2.5},
+  4:{snd:sndFour,nBase:7,  shake:4},
+  0:{snd:null,   nBase:2,  shake:0},
+};
+const SIX_PARTICLE_COLORS=['#f7c948','#ff2d78','#fff','#ff6b35','#22c55e'];
+
+function spawnSixParticles(){
+  for(let i=0;i<35;i++){
+    const a=PI2/35*i;
+    particles.push({x:W/2,y:120,
+      vx:Math.cos(a)*(2+Math.random()*5),vy:Math.sin(a)*(2+Math.random()*5)-2,
+      life:1,color:SIX_PARTICLE_COLORS[i%5],sz:1.5+Math.random()*3});
+  }
+}
+
+function goScore(runs){
+  const prevScore=score;
+  score+=runs;lastRuns=runs;phase='celebrate';phaseT=0;
+  const tier=runs>=6?6:runs>=4?4:0;
+  const cfg=SCORE_TIERS[tier];
+  if(cfg.snd)cfg.snd();
+  const n=tier?cfg.nBase:(runs>=2?4:2);
+  const cl=BALLOON_COLORS[tier];
+  for(let i=0;i<n;i++){
+    balloons.push({x:40+Math.random()*(W-80),y:200+Math.random()*100,vx:(Math.random()-.5)*0.6,
+      vy:-(1.2+Math.random()*2),sz:24+Math.random()*12,color:cl[i%cl.length],
+      num:runs,ph:Math.random()*PI2,life:1});
+  }
+  if(runs===6)spawnSixParticles();
+  shake=cfg.shake;
+  // Milestone detection — every 50 runs
+  const prevM=~~(prevScore/50),curM=~~(score/50);
+  if(curM>prevM&&score>=50){
+    batRaise=true;batRaiseT=0;batRaiseMilestone=curM*50;
+    sndSix(); // milestone roar
+  }
+}
+
+// Unified dismissal handler (DRY: was goBowled + goCaught)
+// Uses tracked timers so startGame can cancel stale callbacks
+function goDismiss(type,sndFn,shakeAmt){
+  dismissal=type;phase=type;phaseT=0;shake=shakeAmt;
+  if(sndFn)sndFn();
+  _timers.push(setTimeout(()=>sndGroan(),300));
+  _timers.push(setTimeout(()=>{gameState='gameover';gameOverT=0;},1800));
+}
+
+// ═══ INPUT ═══
+cv.addEventListener('click',(e)=>{
+  initAudio();
+  const rect=cv.getBoundingClientRect();
+  const tx=(e.clientX-rect.left)/(rect.width/W);
+  const ty=(e.clientY-rect.top)/(rect.height/H);
+  // UI controls (audio, pause)
+  if(tx>W-40&&ty>H-75&&ty<H-42){paused=!paused;return;}
+  if(tx>W-40&&ty>H-40){audioOn=!audioOn;return;}
+  if(paused&&Math.hypot(tx-W/2,ty-H/2)<60){paused=false;return;}
+  if(paused)return;
+  // Game state transitions (menu, game over)
+  if(gameState==='menu'){startGame();return;}
+  if(gameState==='gameover'&&gameOverT>0.5){startGame();return;}
+  // Gameplay (bat swing)
+  if(gameState==='playing'&&phase==='ballFlight'&&!swingActive&&!tappedThisBall&&ballT>0.3){
+    tappedThisBall=true;triggerSwing();
+  }
+});
+
+// ═══ BALL PATH ═══
+// Reusable result object — avoids allocating {x,y,sz} per call on hot path (~10 calls/frame)
+// SAFETY: returned _bp is a shared singleton. Callers MUST read .x/.y/.sz before the next getBP call.
+const _bp={x:0,y:0,sz:0};
+function getBP(p,type){
+  const sy=STB_Y,ey=STS_Y+5;
+  let cx=0,dip=0;
+  const bp=0.55,pt=p<bp?0:(p-bp)/(1-bp),ps=0.5+p*0.5;
+  switch(type){
+    case'legspin':  cx=p<bp?p*-5:-5+pt*40*ps;break;
+    case'offspin':  cx=p<bp?p*5:5+pt*-38*ps;break;
+    case'topspin':  dip=p<bp?Math.sin(p/bp*Math.PI)*-18:0;cx=Math.sin(p*Math.PI)*8*ps;break;
+    case'googly':{  const d=Math.sin(lotFinal*7.3)>0?1:-1;cx=p<bp?p*-4*d:-4*d+pt*32*d*ps;break;}
+    case'inswing':  cx=-p*p*38*ps;break;
+    case'outswing': cx=p*p*38*ps;break;
+    case'slower':   dip=p>bp?pt*25:0;cx=Math.sin(p*Math.PI)*4;break;
+    case'seam':     cx=p>bp?pt*22*ps:0;break;
+    case'cutter':{  const d=Math.sin(lotFinal*3.7+T*0.1)>0?1:-1;cx=p>bp?pt*26*d*ps:0;break;}
+  }
+  _bp.x=W/2+cx;_bp.y=sy+(ey-sy)*p+dip;_bp.sz=2.5+p*10;
+  return _bp;
+}
+
+// ═══ POST-PITCH SPEED MULTIPLIERS ═══
+const SPEED_MODS={topspin:1.45, seam:1.35, slower:0.55};
+
+// ═══ UPDATE SUB-SYSTEMS ═══
+function updateLottery(){
+  lotT+=DT;
+  const prevIdx=lotIdx;
+  const decel=lotT<0.5?0:((lotT-0.5)/1.0)*25;
+  const curSpd=Math.max(lotSpd-decel,0);
+  lotAccum+=curSpd*DT;
+  if(lotAccum>=1){lotAccum-=1;lotIdx=(lotIdx+1)%DELS.length;if(lotIdx!==prevIdx)sndTick();}
+  if(curSpd<=0&&!lotSettled){lotSettled=true;lotIdx=lotFinal;lotSettleT=0;sndSettle();}
+  if(lotSettled)lotSettleT+=DT;
+  const revealTime=Math.max(2-((ballsFaced/30)*1.5),0.5);
+  if(lotSettled&&lotSettleT>revealTime)goRunup();
+}
+
+function updateBallFlight(){
+  let spd=0.35+(curDel.speed-80)/100*0.6;
+  if(ballT>0.55&&SPEED_MODS[curDel.id])spd*=SPEED_MODS[curDel.id];
+  ballT=Math.min(ballT+DT*spd,1);
+  const bp=getBP(ballT,curDel.id);
+  ballX=bp.x;ballY=bp.y;ballSz=bp.sz;
+  if(ballT>0.53&&!pitchDone){pitchDone=true;sndPitch();}
+  canHit=ballT>0.55&&ballT<0.92;
+  // Swing detection
+  if(swingActive){
+    batSwT+=DT;batSwing=Math.min(batSwT*6,1);
+    if(batSwT>0.15&&batSwT<0.18&&swingConnected){
+      goHit();goPostHit();swingActive=false;return true;
+    }
+    if(batSwT>0.4){swingActive=false;batSwing=0;batSwT=0;}
+  }
+  if(ballT>=1)goDismiss('bowled',sndStumps,12);
+  return false;
+}
+
+function updateSixArc(){
+  sixArcT+=0.012;
+  const t=Math.min(sixArcT/SIX_ARC_DUR,1),mt=1-t;
+  hitBX=mt*mt*sixStartX+2*mt*t*((sixStartX+sixEndX)/2)+t*t*sixEndX;
+  hitBY=mt*mt*sixStartY+2*mt*t*sixPeakY+t*t*sixEndY;
+  sixTrail.push({x:hitBX,y:hitBY,a:1.0});
+  if(sixTrail.length>30)sixTrail.shift();
+  sixTrail.forEach(p=>p.a*=0.96);
+  if(t>=1){hitBActive=false;sixArc=false;goScore(6);}
+}
+
+function assignChaser(){
+  const dist=Math.hypot(hitBX-W/2,hitBY-BAT_Y);
+  if(hitPow>=1.0&&dist>30){
+    chaserIdx=Math.abs(fld[4].hx-hitBX)<Math.abs(fld[5].hx-hitBX)?4:5;
+  }else if(hitPow<1.0&&dist>40){
+    let minD=Infinity;
+    fld.forEach((f,i)=>{const d=Math.hypot(f.hx-hitBX,f.hy-hitBY);if(d<minD){minD=d;chaserIdx=i;}});
+  }
+}
+
+function moveChaser(){
+  const f=fld[chaserIdx];
+  if(hitPow>=1.0&&chaserIdx>=4){
+    const dx=hitBX-f.x;if(Math.abs(dx)>5)f.x+=Math.sign(dx)*2.2;
+  }else{
+    const dx=hitBX-f.x,dy=hitBY-f.y,dist=Math.hypot(dx,dy);
+    if(dist>5){f.x+=dx/dist*2.5;f.y+=dy/dist*2.5;}
+  }
+}
+
+function checkBoundaryExit(){
+  if(hitBY>=BOUND_Y&&hitBX>=10&&hitBX<=W-10)return false;
+  hitBActive=false;
+  const runs=hitPow>=1.5?6:hitPow>=1.0?4:1+~~(Math.random()*2);
+  goScore(runs);
+  return true;
+}
+
+function checkFielderCatch(){
+  if(hitPow>=1.0||chaserIdx<0)return false;
+  const f=fld[chaserIdx],dist=Math.hypot(hitBX-f.x,hitBY-f.y);
+  if(dist>10)return false;
+  hitBActive=false;
+  const inField=hitBX>20&&hitBX<W-20&&hitBY>BOUND_Y&&hitBY<H-30;
+  if(misTimed&&inField&&Math.random()<0.50){goDismiss('caught',null,6);return true;}
+  const onPitch=hitBX>W/2-60&&hitBX<W/2+60&&hitBY>PIT_TY&&hitBY<PIT_BY;
+  goScore(onPitch?0:hitBY<300?2+~~(Math.random()*2):hitBY<380?1:Math.random()<0.5?0:1);
+  return true;
+}
+
+function updatePostHit(){
+  if(sixArc){updateSixArc();return true;}
+  if(hitBActive){hitBX+=hitBVX;hitBY+=hitBVY;hitBVY+=0.035;hitBVX*=0.997;}
+  if(chaserIdx<0)assignChaser();
+  if(chaserIdx>=0)moveChaser();
+  if(checkBoundaryExit())return true;
+  if(checkFielderCatch())return true;
+  if(phaseT>3.5){hitBActive=false;goScore(2);}
+  return false;
+}
+
+function updateParticles(){
+  particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=0.06;p.life-=0.012;});
+  compactArr(particles,p=>p.life>0);
+}
+
+function updateBalloons(){
+  balloons.forEach(b=>{
+    b.x+=b.vx+Math.sin(T*2+b.ph)*0.3;b.y+=b.vy;b.vy*=0.997;b.life-=0.003;
+  });
+  compactArr(balloons,b=>b.y>-60&&b.life>0);
+}
+
+// ═══ PHASE HANDLERS (dispatch map for update) ═══
+function phaseRunup(){
+  bowlRunT=Math.min(phaseT/1.3,1);
+  if(bowlRunT>=1)goBowl();
+}
+function phaseBowling(){
+  bowlerArm=Math.min(phaseT*5.5,Math.PI);
+  if(phaseT>0.5)goRelease();
+}
+function phaseHit(){
+  batSwT+=DT;batSwing=Math.min(batSwT*5,1);if(batSwT>0.3)goPostHit();
+}
+function phaseCelebrate(){
+  tCamY*=0.93;
+  if(batRaise)batRaiseT+=DT;
+  // Extend celebration during bat raise (hold for 3s total)
+  const celDur=batRaise?Math.max(3.7,batRaiseT<3.0?99:3.7):3.7;
+  if(phaseT>celDur){
+    if(batRaise&&batRaiseT>=3.0)batRaise=false;
+    resetFielders();
+    // Check innings end (120 balls)
+    if(ballsFaced>=MAX_BALLS){
+      dismissal='innings';phase='innings';phaseT=0;
+      _timers.push(setTimeout(()=>{gameState='gameover';gameOverT=0;},2200));
+      return;
+    }
+    startLottery();
+  }
+}
+function phaseDismissed(){tCamY=0;}
+
+const PHASE_UPDATE={
+  lottery:updateLottery,
+  runup:phaseRunup,
+  bowling:phaseBowling,
+  ballFlight:updateBallFlight,
+  hit:phaseHit,
+  postHit:updatePostHit,
+  celebrate:phaseCelebrate,
+  bowled:phaseDismissed,
+  caught:phaseDismissed,
+  innings:phaseDismissed,
+};
+
+// ═══ UPDATE ═══
+function update(){
+  if(paused)return;
+  T+=DT;phaseT+=DT;shake*=0.9;camY+=(tCamY-camY)*0.06;
+  if(gameState==='menu'){menuT+=DT;return;}
+  if(gameState==='gameover'){gameOverT+=DT;tCamY=0;return;}
+  const handler=PHASE_UPDATE[phase];
+  if(handler)handler();
+  updateParticles();
+  updateBalloons();
+}
+
+// ═══ DRAWING ═══
+
+// Pre-computed star positions (hoisted from drawSky — avoids per-frame array allocation)
+const STARS=[[30,15],[85,40],[160,12],[230,28],[310,18],[60,65],[200,50],[340,42],[145,75],[280,60]];
+
+function drawSky(){
+  X.fillStyle=G_SKY;
+  X.fillRect(0,0,W,GND_TOP+20);
+  // Blit cached stars with twinkle via oscillating alpha
+  X.globalAlpha=0.45+0.25*Math.sin(T*2);
+  X.drawImage(_ocStars,0,0,W,GND_TOP+20);
+  X.globalAlpha=1;
+}
+
+function drawScoreboard(){
+  const bx=W/2,by=82,bw=130,bh=72;
+  X.strokeStyle='#444';X.lineWidth=2;X.beginPath();
+  X.moveTo(bx-bw/2+10,by+bh);X.lineTo(bx-bw/2+15,by+bh+50);
+  X.moveTo(bx+bw/2-10,by+bh);X.lineTo(bx+bw/2-15,by+bh+50);X.stroke();
+  X.fillStyle=C.boardBg;rr(bx-bw/2,by,bw,bh,4);
+  X.strokeStyle='rgba(255,255,255,0.4)';X.lineWidth=1.5;rrs(bx-bw/2,by,bw,bh,4);
+  const scoreStr=String(score).padStart(3,'0');
+  X.fillStyle='#fff';X.font=score>999?'800 26px "Baloo 2"':'800 34px "Baloo 2"';X.textAlign='center';
+  X.fillText(scoreStr,bx,by+36);
+  X.strokeStyle='rgba(255,255,255,0.2)';X.lineWidth=1;
+  X.beginPath();X.moveTo(bx-bw/2+8,by+42);X.lineTo(bx+bw/2-8,by+42);X.stroke();
+  const sr=getSR();
+  X.fillStyle='rgba(255,255,255,0.7)';X.font='700 13px Teko';
+  X.textAlign='left';X.fillText(ballsFaced+'/'+MAX_BALLS+' बॉल',bx-bw/2+12,by+58);
+  X.textAlign='right';X.fillText('SR '+sr,bx+bw/2-12,by+58);
+  X.textAlign='left';
+}
+
+// Pre-computed floodlight bulb positions: [lx, ly, big, bulbOffsets, glowR, poleH]
+const FLOODLIGHTS=[
+  {x:25, y:90, pole:80, bar:[8,16], bulbs:[-6,-3,0,3,6], bsz:1.5, glow:20},
+  {x:365,y:90, pole:80, bar:[8,16], bulbs:[-6,-3,0,3,6], bsz:1.5, glow:20},
+  {x:110,y:78, pole:50, bar:[5,10], bulbs:[-2.5,0,2.5],  bsz:1,   glow:12},
+  {x:280,y:78, pole:50, bar:[5,10], bulbs:[-2.5,0,2.5],  bsz:1,   glow:12},
+];
+
+function drawFloodlights(){
+  X.drawImage(_ocFlood,0,0,W,H);
+}
+
+function drawCrowd(sy,cel){
+  crowd.forEach(p=>{
+    const ry=sy+p.row*18+12,w=Math.sin(T*p.sp+p.ph)*1.5,ch=cel?Math.sin(T*6+p.ph)*2.5:0;
+    const py=ry+w+ch,px=p.x,au=cel&&Math.sin(T*4+p.ph)>0;
+    X.fillStyle=p.j;rr(px-2,py-p.h,4,p.h,1);
+    X.fillStyle=p.sk;dot(px,py-p.h-2.5,2.8);
+    if(p.hat){X.fillStyle=p.hatC;X.beginPath();X.arc(px,py-p.h-3.5,3,Math.PI,0);X.fill();X.fillRect(px-3.5,py-p.h-3.5,7,1);}
+    else{X.fillStyle=C.hair;X.beginPath();X.arc(px,py-p.h-4,2.8,Math.PI+0.3,-0.3);X.fill();}
+    if(au){X.strokeStyle=p.sk;X.lineWidth=1.2;X.beginPath();
+      X.moveTo(px-2,py-p.h+1);X.lineTo(px-4.5,py-p.h-5+ch*0.3);
+      X.moveTo(px+2,py-p.h+1);X.lineTo(px+4.5,py-p.h-5+ch*0.3);X.stroke();
+      if(p.flag){X.fillStyle=p.flagC;X.fillRect(px+4.5,py-p.h-10+ch*0.2,7,4);}}
+  });
+}
+
+function drawAdBanner(sy){
+  X.fillStyle='#080428';X.fillRect(0,sy+72,W,10);
+  X.save();X.beginPath();X.rect(0,sy+72,W,10);X.clip();
+  X.fillStyle=C.gold;X.font='600 7px Teko';X.textAlign='left';
+  const adTxt='DB प्रीमियर लीग 2026  ✦  ';
+  const scrollX=(T*30)%100;
+  for(let i=-1;i<6;i++)X.fillText(adTxt,i*100-scrollX,sy+80);
+  X.restore();X.textAlign='left';
+}
+
+function drawStands(){
+  const sy=155;
+  X.fillStyle='#120840';X.fillRect(0,sy-5,W,80);
+  for(let r=0;r<4;r++){X.fillStyle=r%2?'#1a1050':'#221660';X.fillRect(0,sy+r*18,W,18);}
+  const cel=phase==='celebrate'&&phaseT<2;
+  if(cel){drawCrowd(sy,true);}else{X.drawImage(_ocCrowdIdle,0,0,W,H);}
+  drawAdBanner(sy);
+  drawBoundary();
+}
+
+// Boundary boards + rope (extracted from drawStands for clarity)
+const SPONSORS=[
+  {txt:'DBPL',bg:'#0a2660',fg:'#f7c948',w:52},{txt:'⭐TATA',bg:'#1a1a2e',fg:'#fff',w:48},
+  {txt:'JIO 5G',bg:'#0033a0',fg:'#fff',w:48},{txt:'DREAM11',bg:'#e74c3c',fg:'#fff',w:56},
+  {txt:'DBPL',bg:'#0a2660',fg:'#f7c948',w:52},{txt:'CEAT',bg:'#222',fg:'#ffd93d',w:42},
+  {txt:'TATA IPL',bg:'#1a1a2e',fg:'#fff',w:56},{txt:'JIO 5G',bg:'#0033a0',fg:'#fff',w:48},
+];
+
+function drawBoundary(){
+  const byC=BOUND_Y,boardH=11,boardY=byC-1,curveAmt=10;
+  // Rope shadow
+  X.fillStyle='rgba(0,0,0,0.15)';
+  X.beginPath();X.moveTo(0,byC+6);X.quadraticCurveTo(W/2,byC+16,W,byC+6);
+  X.lineTo(W,byC+9);X.quadraticCurveTo(W/2,byC+19,0,byC+9);X.closePath();X.fill();
+  // Sponsor boards
+  let bsx=0;
+  SPONSORS.forEach(sp=>{
+    const curveY=boardY+Math.sin((bsx+sp.w/2)/W*Math.PI)*curveAmt;
+    X.fillStyle=sp.bg;rr(bsx,curveY,sp.w,boardH,1.5);
+    X.strokeStyle='rgba(255,255,255,0.15)';X.lineWidth=0.5;rrs(bsx,curveY,sp.w,boardH,1.5);
+    X.fillStyle=sp.fg;X.font='700 6.5px Teko';X.textAlign='center';
+    X.fillText(sp.txt,bsx+sp.w/2,curveY+8);
+    bsx+=sp.w+2;
+  });X.textAlign='left';
+  // Rope
+  const ropeFl=phase==='celebrate'&&lastRuns>=4&&phaseT<1.5;
+  const ropeY=byC+boardH,ropeCurve=byC+boardH+curveAmt;
+  if(ropeFl){
+    const rgb=lastRuns>=6?'255,45,120':'34,197,94';
+    X.strokeStyle=`rgba(${rgb},${0.5+Math.sin(T*12)*0.5})`;X.lineWidth=3;
+  }else{
+    X.strokeStyle='rgba(255,255,255,0.45)';X.lineWidth=2;
+  }
+  X.setLineDash([]);X.beginPath();X.moveTo(0,ropeY);X.quadraticCurveTo(W/2,ropeCurve,W,ropeY);X.stroke();
+  if(!ropeFl){
+    X.strokeStyle='rgba(200,180,140,0.3)';X.lineWidth=1;X.setLineDash([3,4]);
+    X.beginPath();X.moveTo(0,ropeY);X.quadraticCurveTo(W/2,ropeCurve,W,ropeY);X.stroke();X.setLineDash([]);
+  }
+}
+
+function drawOutfield(){
+  X.fillStyle=G_OUTFIELD;
+  X.fillRect(0,GND_TOP,W,H-GND_TOP);
+  for(let i=0;i<18;i++){X.fillStyle=i%2?'rgba(0,0,0,0.015)':'rgba(255,255,255,0.01)';X.fillRect(0,GND_TOP+i*30,W,30);}
+}
+
+function drawPitch(){
+  const tl=W/2-PIT_TW/2,tr=W/2+PIT_TW/2,bl=W/2-PIT_BW/2,br=W/2+PIT_BW/2;
+  // Shadow
+  X.fillStyle='rgba(0,0,0,0.06)';X.beginPath();
+  X.moveTo(tl-3,PIT_TY+3);X.lineTo(tr+3,PIT_TY+3);X.lineTo(br+5,PIT_BY+3);X.lineTo(bl-5,PIT_BY+3);X.closePath();X.fill();
+  // Pitch surface
+  X.fillStyle=G_PITCH;
+  X.beginPath();X.moveTo(tl,PIT_TY);X.lineTo(tr,PIT_TY);X.lineTo(br,PIT_BY);X.lineTo(bl,PIT_BY);X.closePath();X.fill();
+  // Creases (helper for crease width at a given Y)
+  const creaseW=y=>{const t=(y-PIT_TY)/(PIT_BY-PIT_TY);return PIT_TW+(PIT_BW-PIT_TW)*t;};
+  // Bowling crease
+  const bcY=PIT_TY+30;
+  X.strokeStyle='rgba(238,232,216,0.5)';X.lineWidth=1;
+  X.beginPath();X.moveTo(W/2-creaseW(bcY)*0.4,bcY);X.lineTo(W/2+creaseW(bcY)*0.4,bcY);X.stroke();
+  // Batting crease
+  const btY=BAT_Y+55;
+  X.strokeStyle=C.wh;X.lineWidth=2.5;
+  X.beginPath();X.moveTo(W/2-creaseW(btY)*0.35,btY);X.lineTo(W/2+creaseW(btY)*0.35,btY);X.stroke();
+}
+
+// Pre-computed broken stump animation data (hoisted — avoids per-frame allocation during bowled phase)
+const STUMP_BROKEN_POS=[[-1,-5,-10],[0,2,-8],[1,6,-9]];
+const STUMP_BAIL_POS=[[-1,-10,-18],[1,14,-14]];
+
+function drawStumps(x,y,sc,broken){
+  X.save();X.translate(x,y);X.scale(sc,sc);
+  const sh=26,sw=3.5,gap=6;
+  if(broken&&phaseT>0){
+    const bt=Math.min(phaseT*3,1);
+    STUMP_BROKEN_POS.forEach(([i,rx,vy],idx)=>{
+      X.save();X.translate(i*gap+bt*rx*14,-sh+bt*vy*5+bt*bt*22);X.rotate(bt*(idx-1)*1.8);
+      X.fillStyle=linGrad(-sw/2,0,sw/2,0,[0,'#c0ad85',0.5,'#f0e8d4',1,'#b8a480']);rr(-sw/2,0,sw,sh,0.8);X.restore();});
+    STUMP_BAIL_POS.forEach(([dir,vx,vy])=>{
+      X.save();X.translate(bt*vx,-sh-3+bt*vy+bt*bt*25);X.rotate(bt*dir*5);
+      X.fillStyle='rgba(255,50,50,0.3)';rr(-8,-3.5,16,7,3.5);X.fillStyle='#ff4433';rr(-6,-1.5,12,3,1.5);X.restore();});
+  }else{
+    for(let i=-1;i<=1;i++){
+      X.fillStyle=linGrad(i*gap-sw/2,0,i*gap+sw/2,0,[0,'#c0ad85',0.5,'#f0e8d4',1,'#b8a480']);
+      rr(i*gap-sw/2,-sh,sw,sh,0.5);
+      X.fillStyle='#bbb';X.beginPath();X.moveTo(i*gap-1.8,-sh);X.lineTo(i*gap,-sh-4);X.lineTo(i*gap+1.8,-sh);X.closePath();X.fill();}
+    [[-gap,0],[0,gap]].forEach(([f,to])=>{
+      X.fillStyle=linGrad(0,-sh-3,0,-sh,[0,'#ffe050',1,'#cc9500']);rr(f-0.5,-sh-3,to-f+1,3,1.5);});
+  }
+  X.restore();
+}
+
+// ═══ CHIBI FIELDER ═══
+function getFielderAnim(fy,chasing,idx){
+  const ph=(idx||0)*1.3, bnd=fy<=260, idle=!chasing;
+  return{
+    sc:bnd?0.22:fy<=340?0.45:0.775,
+    lc:chasing?Math.sin(T*10)*0.3:0,
+    tx:idle?(bnd?Math.sin(T*1.2+ph)*0.8:Math.sin(T*1.8+ph)*0.3):0,
+    ty:idle?(bnd?Math.abs(Math.sin(T*1.5+ph))*0.5:Math.sin(T*2.5+ph)):0,
+    armA:idle?(bnd?0.25+Math.sin(T*1.5+ph)*0.08:Math.sin(T*2.5+ph)*0.12):0,
+    hb:Math.sin(T*2+fy),
+  };
+}
+
+function drawFielder(fx,fy,jersey,chasing,idx){
+  const a=getFielderAnim(fy,chasing,idx);
+  X.save();X.translate(fx+a.tx,fy+a.ty);X.scale(a.sc,a.sc);
+  // Shadow
+  X.fillStyle='rgba(0,0,0,0.12)';oval(0,28,16,4);
+  // Legs
+  X.fillStyle=C.wh;
+  [-5,5].forEach((lx,i)=>{
+    X.save();X.translate(lx,14);X.rotate(i?-a.lc:a.lc);
+    rr(-3,0,6,14,3);X.fillStyle='#444';rr(-3.5,12,7,3,1.5);X.fillStyle=C.wh;X.restore();
+  });
+  // Body
+  X.fillStyle=jersey;rr(-12,-8,24,24,8);
+  X.fillStyle=C.gold;X.fillRect(-12,2,24,3);
+  // Arms
+  X.fillStyle=C.skin;
+  [[-12,-0.4,1],[12,0.4,-1]].forEach(([ax,baseA,sign])=>{
+    X.save();X.translate(ax,0);X.rotate(baseA+a.lc*0.5*sign+a.armA*sign);
+    rr(ax<0?-2:-3,0,5,12,2.5);X.restore();
+  });
+  // Head
+  X.fillStyle=C.skin;dot(0,-22+a.hb,16);
+  // Cap
+  X.fillStyle=jersey;X.beginPath();X.arc(0,-25+a.hb,16.5,Math.PI+0.1,-0.1);X.fill();
+  oval(0,-25+a.hb,18,4);
+  X.fillStyle=C.gold;dot(0,-37+a.hb,2.5);
+  // Eyes
+  [[-6,5],[ 6,-5]].forEach(([ex,px])=>{
+    X.fillStyle='#fff';oval(ex,-22+a.hb,5,5.5);
+    X.fillStyle='#111';dot(ex+(ex<0?1:-1),-22+a.hb,2.5);
+    X.fillStyle='#fff';dot(ex+(ex<0?-0.5:px/10),-23.5+a.hb,1);
+  });
+  // Smile
+  X.strokeStyle='#8a6040';X.lineWidth=1;X.beginPath();X.arc(0,-16+a.hb,4,0.2,Math.PI-0.2);X.stroke();
+  X.restore();
+}
+
+// ═══ BATSMAN ═══
+// Helper: draw one batting pad (leg + pad + shoe)
+function drawPad(tx,ty,tH,padH){
+  X.save();X.translate(tx,ty);
+  X.fillStyle='#004ba0';rr(-3,0,8,tH,3);
+  X.fillStyle='#e8dcc8';rr(-4,tH-4,10,padH,[2,2,3,3]);
+  X.fillStyle='#d0c8a0';X.fillRect(-4,tH-1,10,2);X.fillRect(-4,tH+5,10,2);
+  X.fillStyle='#444';rr(-3,tH+padH-4,9,4,[0,0,3,3]);
+  X.restore();
+}
+
+function drawBatWithHands(sw,swT,idle,raise){
+  X.save();
+  const batTap=idle&&!raise?Math.sin(T*3.5)*0.18:0;
+  // Bat raise: smooth lift to vertical, hold, then lower
+  let raiseAngle=0;
+  if(raise>0){
+    const liftT=Math.min(raise/0.4,1); // 0.4s to lift
+    raiseAngle=-liftT*1.8; // rotate bat upward
+  }
+  const batAngle=sw?-0.8+swT*3.0:raise>0?-0.8+raiseAngle:-0.8+batTap;
+  X.translate(10,-4);X.rotate(batAngle);
+  // Motion blur trails
+  if(sw&&swT>0.1&&swT<0.8){
+    for(let g=1;g<=4;g++){
+      const ga=0.12-g*0.025;if(ga<=0)continue;
+      X.save();X.rotate(-g*0.35*swT);X.globalAlpha=ga;
+      X.fillStyle='#c8a848';rr(-7,29,14,30,[1,1,5,5]);
+      X.globalAlpha=1;X.restore();
+    }
+  }
+  // Arms + Gloves
+  X.fillStyle='#003a80';rr(-4,-8,8,14,3);X.fillStyle=C.skin;rr(-3,5,7,5,2);       // Right arm
+  X.fillStyle=C.mi;rr(-8,-6,7,12,3);X.fillStyle=C.skin;rr(-7,5,6,4,2);             // Left arm
+  X.fillStyle='#f0f0f0';rr(-6,8,12,8,3);
+  X.fillStyle='#ddd';rr(-5,9,5,6,2);X.fillStyle='#ccc';rr(1,9,5,6,2);              // Gloves
+  // Bat
+  for(let i=0;i<5;i++){X.fillStyle=i%2?'#1a1a1a':'#333';X.fillRect(-2.5,16+i*2.2,5,1.5);}
+  X.fillStyle='#b09040';X.beginPath();X.moveTo(-5,26);X.lineTo(0,24);X.lineTo(5,26);X.lineTo(6,30);X.lineTo(-6,30);X.closePath();X.fill();
+  X.fillStyle=linGrad(-7,30,7,30,[0,'#a88038',0.35,'#f0d878',1,'#a88038']);
+  rr(-7,29,14,30,[1,1,5,5]);
+  X.fillStyle='rgba(255,255,255,0.1)';X.fillRect(-4,31,5,26);
+  X.fillStyle='#9a7030';rr(-7,56,14,4,[0,0,5,5]);
+  // Impact spark
+  if(sw&&swT>0.12&&swT<0.35&&swingConnected){
+    const st=(swT-0.12)/0.23,sa=1-st,sz=8+st*18;
+    X.fillStyle=radGrad(0,55,1,0,55,sz,[0,`rgba(255,255,220,${sa*0.9})`,0.4,`rgba(255,200,50,${sa*0.5})`,1,'rgba(255,150,0,0)']);
+    dot(0,55,sz);
+    for(let s=0;s<6;s++){const a=PI2/6*s+st*2,r=sz*0.5+st*12;
+      X.strokeStyle=`rgba(255,220,80,${sa*0.7})`;X.lineWidth=1.5-st;
+      X.beginPath();X.moveTo(Math.cos(a)*4,55+Math.sin(a)*4);X.lineTo(Math.cos(a)*r,55+Math.sin(a)*r);X.stroke();}
+  }
+  X.restore();
+}
+
+function drawHelmet(br){
+  X.save();X.translate(2,-32+br);
+  X.fillStyle=radGrad(-2,-4,3,0,-2,17,[0,'#0055c0',1,'#001c50']);dot(0,-3,17);
+  X.fillStyle='#003580';rr(13,-6,5,13,2);
+  X.fillStyle='#002a68';rr(-16,-4,4,10,2);
+  X.fillStyle='#002860';X.beginPath();X.moveTo(-12,8);X.quadraticCurveTo(-13,15,-8,17);
+  X.lineTo(8,17);X.quadraticCurveTo(13,15,12,8);X.closePath();X.fill();
+  X.strokeStyle='rgba(0,80,180,0.3)';X.lineWidth=1;
+  X.beginPath();X.moveTo(2,-19);X.quadraticCurveTo(2,-5,2,10);X.stroke();
+  X.fillStyle=C.gold;dot(0,-16,3);
+  X.fillStyle='#002050';X.beginPath();X.moveTo(-14,-6);X.lineTo(-18,-4);X.lineTo(-14,-1);X.closePath();X.fill();
+  X.strokeStyle='#555';X.lineWidth=0.6;
+  [-15,-14].forEach(gx=>{X.beginPath();X.moveTo(gx,-4);X.lineTo(gx,-1);X.stroke();});
+  X.fillStyle=C.skin;rr(-5,13,10,5,2);
+  X.restore();
+}
+
+function drawBatsman(){
+  const bx=BAT_X,by=BAT_Y;
+  const sw=swingActive||(phase==='hit'||phase==='postHit');
+  const swT=sw?Math.min(batSwing,1):0;
+  const idle=!sw&&(phase==='ballFlight'||phase==='lottery'||phase==='bowling'||phase==='runup'||phase==='celebrate');
+  const raise=batRaise?batRaiseT:0;
+  const br=(idle&&!batRaise)?Math.sin(T*2.2):0;
+  X.save();X.translate(bx,by+br);
+  // Shadow
+  X.fillStyle='rgba(0,0,0,0.15)';oval(3,62,25,6);
+  // Legs
+  drawPad(6,28,14,16);
+  drawPad(-4,25,15,17);
+  // Body
+  X.fillStyle=linGrad(-8,-15,12,-15,[0,'#003580',0.5,C.mi,1,'#002a68']);
+  rr(-8,-18,22,40,6);
+  X.fillStyle=C.gold;X.fillRect(-8,-16,22,3);
+  X.fillStyle=C.gold;dot(8,0,3);
+  X.strokeStyle='rgba(0,0,0,0.12)';X.lineWidth=0.8;
+  X.beginPath();X.moveTo(-6,-12);X.quadraticCurveTo(3,-16,14,-12);X.stroke();
+  // Bat + Hands
+  drawBatWithHands(sw,swT,idle,raise);
+  // Helmet
+  drawHelmet(br);
+  X.restore();
+}
+
+// ═══ BOWLER ═══
+// Helper: draw one bowler leg
+function drawBowlerLeg(tx,ty,ang,len){
+  X.save();X.translate(tx,ty);X.rotate(ang);
+  X.fillStyle=C.wh;rr(-3,0,7,len,3);
+  X.fillStyle='#444';X.fillRect(-4,len-3,8,3);
+  X.restore();
+}
+
+function drawBowlerArms(isRunning,isDelivering,runCycle){
+  X.fillStyle=C.skin;
+  if(isRunning){
+    const aa=Math.sin(runCycle+Math.PI)*0.5;
+    X.save();X.translate(-10,0);X.rotate(aa);rr(-2.5,0,5,14,2);X.restore();
+    X.save();X.translate(10,0);X.rotate(-aa);rr(-2.5,0,5,14,2);
+    X.fillStyle=C.ball;dot(0,16,3);X.restore();
+  }else if(isDelivering){
+    const armAng=-2.5+bowlerArm;
+    const nbAng=phaseT<0.15?-1.2:(-1.2+Math.min((phaseT-0.15)*4,2.0));
+    X.save();X.translate(-10,0);X.rotate(nbAng);rr(-2.5,0,5,14,2);X.restore();
+    X.save();X.translate(8,-2);X.rotate(armAng);rr(-2.5,0,5,22,2);
+    if(!ballVis){X.fillStyle=C.ball;dot(0,25,3.5);}
+    X.restore();
+  }else{
+    X.save();X.translate(-10,0);X.rotate(-0.3);rr(-2.5,0,5,14,2);X.restore();
+    X.save();X.translate(10,0);X.rotate(0.3);rr(-2.5,0,5,14,2);
+    if(phase==='lottery'){X.fillStyle=C.ball;dot(0,17,3);}
+    X.restore();
+  }
+}
+
+function getBowlerState(){
+  const creaseX=W/2+3,creaseY=STB_Y-12,creaseSc=0.7;
+  const startY=STB_Y-120,startSc=0.3;
+  const st={bx:creaseX,by:creaseY,sc:creaseSc,runCycle:0,isRunning:false,isDelivering:false};
+  if(phase==='lottery'){
+    st.by=startY+30;st.sc=startSc+0.1;
+  }else if(phase==='runup'){
+    const et=bowlRunT<0.3?bowlRunT*bowlRunT*3.3:0.3+bowlRunT*1.0;
+    const p=Math.min(et,1);
+    st.by=startY+(creaseY-startY)*p;st.sc=startSc+(creaseSc-startSc)*p;
+    st.isRunning=true;st.runCycle=phaseT*8;
+  }else if(phase==='bowling'){
+    st.isDelivering=true;
+  }
+  return st;
+}
+
+function drawBowler(){
+  const s=getBowlerState();
+  X.save();X.translate(s.bx,s.by);X.scale(s.sc,s.sc);
+  // Shadow
+  X.fillStyle='rgba(0,0,0,0.1)';oval(0,40,15,3.5);
+  // Legs
+  const legL=20;
+  if(s.isRunning){
+    const la=Math.sin(s.runCycle)*0.6;
+    drawBowlerLeg(-4,18,-la,legL);drawBowlerLeg(4,18,la,legL);
+  }else if(s.isDelivering){
+    const dt=Math.min(phaseT*3,1);
+    drawBowlerLeg(-3,18,0.3*dt,legL+2);drawBowlerLeg(4,16,-0.8*dt,legL-2);
+  }else{
+    X.fillStyle=C.wh;rr(-6,18,7,legL,3);rr(1,18,7,legL,3);
+    X.fillStyle='#444';X.fillRect(-7,36,8,3);X.fillRect(0,36,8,3);
+  }
+  // Torso
+  if(s.isDelivering){
+    const lean=phaseT<0.2?-0.15:Math.min((phaseT-0.2)*1.5,0.3);X.rotate(lean);
+  }
+  X.fillStyle=C.rcb;rr(-10,-6,20,26,6);
+  X.fillStyle=C.gold;X.fillRect(-10,6,20,2);
+  // Arms
+  drawBowlerArms(s.isRunning,s.isDelivering,s.runCycle);
+  // Head
+  X.fillStyle=C.skin;dot(0,-16,12);
+  X.fillStyle=C.hair;X.beginPath();X.arc(0,-19,12,Math.PI+0.2,-0.2);X.fill();
+  X.fillStyle=C.rcb;X.fillRect(-12,-18,24,3);
+  // Eyes
+  X.fillStyle='#fff';oval(-4,-14,3.5,3.5);oval(4,-14,3.5,3.5);
+  X.fillStyle='#111';dot(-3.5,-14,1.8);dot(4.5,-14,1.8);
+  X.fillStyle='#fff';dot(-5,-15.5,0.8);dot(3.5,-15.5,0.8);
+  X.restore();
+}
+
+function drawBall(){
+  if(!ballVis||phase!=='ballFlight')return;
+  // Trail
+  for(let i=1;i<10;i++){
+    const tp=Math.max(0,ballT-i*0.025),p=getBP(tp,curDel.id),a=0.25-i*0.025;
+    if(a<=0)continue;X.fillStyle=`rgba(200,20,20,${a})`;dot(p.x,p.y,p.sz*0.2);
+  }
+  // Ball body
+  X.fillStyle=radGrad(ballX-1.5,ballY-1.5,0.5,ballX,ballY,ballSz,[0,'#ff4444',0.4,C.ball,1,'#880808']);
+  dot(ballX,ballY,ballSz);
+  // Seam
+  X.save();X.translate(ballX,ballY);X.rotate(T*14);
+  X.strokeStyle='rgba(240,230,200,0.5)';X.lineWidth=0.5;
+  X.beginPath();X.arc(0,0,ballSz*0.5,-0.5,0.5);X.stroke();
+  X.beginPath();X.arc(0,0,ballSz*0.5,Math.PI-0.5,Math.PI+0.5);X.stroke();X.restore();
+  // Shadow
+  X.fillStyle='rgba(0,0,0,0.08)';oval(ballX,ballY+ballSz+2,ballSz*0.6,ballSz*0.2);
+}
+
+function drawFourTrail(){
+  for(let i=1;i<=8;i++){
+    const tx=hitBX-hitBVX*i*1.8,ty=hitBY-hitBVY*i*0.6,a=0.4-i*0.045;
+    if(a<=0)continue;
+    X.fillStyle=`rgba(34,197,94,${a})`;oval(tx,ty,3+i*0.5,1.5,Math.atan2(hitBVY,hitBVX));
+    X.fillStyle=`rgba(255,220,50,${a*0.6})`;dot(tx,ty,1.5);
+  }
+  const sp=Math.sin(T*20);X.fillStyle=`rgba(34,197,94,${0.3+sp*0.15})`;
+  for(let i=0;i<4;i++)dot(hitBX+(Math.random()-.5)*8,hitBY+(Math.random()-.5)*4,1+Math.random());
+  X.strokeStyle='rgba(80,60,20,0.08)';X.lineWidth=4;X.beginPath();X.moveTo(W/2,BAT_Y+30);X.lineTo(hitBX,hitBY);X.stroke();
+  X.fillStyle=radGrad(hitBX,hitBY,2,hitBX,hitBY,14,[0,'rgba(34,197,94,0.4)',1,'rgba(34,197,94,0)']);
+  dot(hitBX,hitBY,14);
+}
+
+function drawSixTrail(){
+  // Single pass: draw connecting lines + glow dots together
+  for(let i=0;i<sixTrail.length;i++){
+    const p1=sixTrail[i],a=p1.a*0.6;
+    // Line segment from previous to current
+    if(i>0){
+      const p0=sixTrail[i-1];
+      X.strokeStyle=`rgba(255,${160+i*3},30,${a})`;X.lineWidth=1+i/sixTrail.length*5;X.lineCap='round';
+      X.beginPath();X.moveTo(p0.x,p0.y);X.lineTo(p1.x,p1.y);X.stroke();
+    }
+    // Glow dot at each point
+    X.fillStyle=`rgba(255,200,50,${p1.a*0.5})`;dot(p1.x,p1.y,1+i/sixTrail.length*3);
+  }
+  // Ball glow + body
+  X.fillStyle=radGrad(hitBX,hitBY,2,hitBX,hitBY,18,[0,'rgba(255,200,50,0.5)',1,'rgba(255,100,0,0)']);
+  dot(hitBX,hitBY,18);
+  const t=sixArcT/SIX_ARC_DUR,bsz=5+Math.sin(t*Math.PI)*3;
+  X.fillStyle=radGrad(hitBX-1,hitBY-1,0.5,hitBX,hitBY,bsz,[0,'#ff6644',1,'#cc1100']);
+  dot(hitBX,hitBY,bsz);
+  X.fillStyle='rgba(255,255,255,0.4)';dot(hitBX-1,hitBY-2,bsz*0.35);
+}
+
+function drawHitBall(){
+  if(!hitBActive)return;
+  // FOUR ground trail
+  if(!sixArc&&hitPow>=1.0&&hitPow<1.5) drawFourTrail();
+  // SIX arc trail
+  if(sixArc&&sixTrail.length>1){drawSixTrail();return;}
+  // Normal hit ball
+  X.fillStyle='rgba(0,0,0,0.08)';oval(hitBX+1,hitBY+5,4,1.5);
+  X.fillStyle=radGrad(hitBX-1,hitBY-1,0.5,hitBX,hitBY,5,[0,'#ff4444',1,'#880808']);
+  dot(hitBX,hitBY,5);
+}
+
+function drawBatBtn(){
+  if(gameState!=='playing')return;
+  const by=H-72;
+  const inFlight=phase==='ballFlight'&&ballT>0.35&&!swingActive&&!tappedThisBall;
+  // Pre-compute state-dependent values
+  const st=canHit?{pulse:0.5+Math.sin(T*8)*0.5,base:58,stroke:'#fff',lw:3.5}
+    :inFlight?{pulse:0.2,base:54,stroke:'rgba(255,255,255,0.7)',lw:2.5}
+    :{pulse:0,base:50,stroke:'rgba(255,255,255,0.5)',lw:2};
+  const breath=inFlight?Math.sin(T*4)*3:0;
+  const sz=st.base+breath;
+  // Outer glow (flight only)
+  if(inFlight){
+    X.fillStyle=radGrad(W/2,by,5,W/2,by,65,[0,`rgba(247,201,72,${st.pulse*0.4})`,1,'rgba(247,201,72,0)']);
+    dot(W/2,by,65);
+  }
+  // Button
+  X.fillStyle=goldBtnGrad(W/2,by,sz);
+  dot(W/2,by,sz);
+  X.strokeStyle=st.stroke;X.lineWidth=st.lw;circ(W/2,by,sz);
+  // Bat icon with wiggle
+  const wiggle=inFlight?Math.sin(T*6)*0.15:0;
+  X.save();X.translate(W/2,by);X.rotate(-0.4+wiggle);
+  X.fillStyle='#7a5a18';X.fillRect(-2,-15,4,9);
+  X.fillStyle='#c8a848';rr(-7,-7,14,22,[1,1,4,4]);
+  X.fillStyle='#ddc060';X.fillRect(-4,-5,7,18);X.restore();
+}
+
+function drawBalloons(){
+  balloons.forEach(b=>{
+    if(b.y<-60||b.life<=0)return;
+    X.strokeStyle='rgba(255,255,255,0.15)';X.lineWidth=0.5;X.beginPath();
+    X.moveTo(b.x,b.y+b.sz*0.75);X.quadraticCurveTo(b.x+Math.sin(T+b.ph)*3,b.y+b.sz+10,b.x,b.y+b.sz+16);X.stroke();
+    X.fillStyle=b.color;oval(b.x,b.y,b.sz*0.55,b.sz*0.7);
+    X.fillStyle='rgba(255,255,255,0.25)';oval(b.x-b.sz*0.12,b.y-b.sz*0.18,b.sz*0.12,b.sz*0.22,-0.3);
+    X.font=`800 ${b.sz*0.6}px Teko`;X.textAlign='center';
+    X.strokeStyle='#fff';X.lineWidth=3;X.strokeText(b.num,b.x,b.y+b.sz*0.17);
+    X.fillStyle='#1a1a2e';X.fillText(b.num,b.x,b.y+b.sz*0.17);X.textAlign='left';
+  });
+}
+
+function drawParticlesFx(){
+  particles.forEach(p=>{
+    if(p.life<=0)return;
+    X.globalAlpha=p.life;X.fillStyle=p.color;
+    dot(p.x,p.y,p.sz*p.life);X.globalAlpha=1;
+  });
+}
+
+// ═══ CELEBRATION TEXT (data-driven) ═══
+// Ripple effect helper
+function drawRipple(cx,cy,maxR,progress,color1,color2){
+  const rp=progress,ripR=rp*maxR,fade=1-rp;
+  X.strokeStyle=`rgba(${color1},${fade*0.5})`;X.lineWidth=4-rp*3;circ(cx,cy,ripR);
+  if(color2&&rp>0.3){X.strokeStyle=`rgba(${color2},${fade*0.35})`;X.lineWidth=2;circ(cx,cy,ripR*0.65);}
+}
+
+// Celebration configs
+const CEL_CONFIGS={
+  6:{y:150,dur:3.5,rippleDur:1.4,rippleR:220,r1:'255,45,120',r2:'247,201,72',
+     glowClr:'#ff2d78',boxClr:'rgba(255,45,120,0.12)',boxW:170,boxH:80,
+     font:'800 46px "Baloo 2"',txt:'छक्का! 🔥',sub:'शानदार छक्का! 💥🏏',subClr:null,
+     scaleSpd:1.8,fadeStart:2.5,fadeDur:1.0},
+  4:{y:160,dur:1.8,rippleDur:0.8,rippleR:180,r1:'34,197,94',r2:'255,220,50',
+     glowClr:'#22c55e',boxClr:'rgba(34,197,94,0.12)',boxW:160,boxH:72,
+     font:'800 40px "Baloo 2"',txt:'चौका! 💥',sub:'जबरदस्त चौका! 🎯🔥',subClr:'#22c55e',
+     scaleSpd:5,fadeStart:1.0,fadeDur:0.8,
+     flashH:50,flashClr:'rgba(34,197,94,'},
+};
+
+// Dismissal text configs
+const DISMISS_CONFIGS={
+  bowled:{txt:'बोल्ड! 😱',sub:'क्लीन बोल्ड!',clr:'#ef4444'},
+  caught:{txt:'कैच आउट! 🤲',sub:'कैच आउट!',clr:'#f97316'},
+};
+
+// Pre-computed celebration tier pairs (hoisted — avoids per-frame allocation)
+const CEL_TIERS=[[6,CEL_CONFIGS[6]],[4,CEL_CONFIGS[4]]];
+
+function drawCelebration(){
+  // Boundary celebrations (6 or 4)
+  for(const[minRuns,cfg] of CEL_TIERS){
+    if(!(phase==='celebrate'&&lastRuns>=minRuns&&phaseT<cfg.dur))continue;
+    if(minRuns===4&&lastRuns>=6)continue; // don't show 4 text for a 6
+    // Ripple
+    if(phaseT<cfg.rippleDur){
+      const rp=phaseT/cfg.rippleDur;
+      drawRipple(W/2,cfg.y,cfg.rippleR,rp,cfg.r1,cfg.r2);
+      // FOUR flash
+      if(cfg.flashClr){
+        X.fillStyle=cfg.flashClr+Math.max(0,1-rp)*0.25+')';X.fillRect(0,BOUND_Y-20,W,cfg.flashH);
+      }
+    }
+    // Text box
+    const sc=Math.min(phaseT*cfg.scaleSpd,1),fa=phaseT>cfg.fadeStart?1-(phaseT-cfg.fadeStart)/cfg.fadeDur:1;
+    X.save();X.globalAlpha=fa;X.translate(W/2,cfg.y);X.scale(sc,sc);
+    glowRect(-cfg.boxW/2,-30,cfg.boxW,cfg.boxH,12,cfg.glowClr,12);
+    X.fillStyle=cfg.boxClr;rr(-cfg.boxW/2,-30,cfg.boxW,cfg.boxH,12);
+    X.fillStyle='#fff';X.font=cfg.font;X.textAlign='center';
+    glowDot(0,8,30,cfg.glowClr);X.fillText(cfg.txt,0,16);
+    X.font='700 16px Teko';X.fillStyle=cfg.subClr||C.gold;X.fillText(cfg.sub,0,36);
+    X.restore();
+    break; // only one celebration at a time
+  }
+}
+
+function drawDismissalText(){
+  // Dismissal text (bowled / caught)
+  const dc=DISMISS_CONFIGS[phase];
+  if(dc&&phaseT>0.3){
+    const fa=phaseT>1.5?1-(phaseT-1.5)/0.5:Math.min((phaseT-0.3)*3,1);
+    X.save();X.globalAlpha=fa;X.translate(W/2,450);
+    X.fillStyle='#fff';X.font='800 36px "Baloo 2"';X.textAlign='center';
+    glowDot(0,4,25,dc.clr);X.fillText(dc.txt,0,12);
+    X.font='700 14px Teko';X.fillStyle=dc.clr;X.fillText(dc.sub,0,30);
+    X.restore();
+  }
+}
+
+// ═══ MILESTONE BAT RAISE OVERLAY ═══
+const MILESTONE_TEXT={
+  50:{txt:'अर्धशतक! 🏏',sub:'शानदार अर्धशतक!',clr:'#f7c948'},
+  100:{txt:'शतक! 💯',sub:'शानदार शतक! 🎉',clr:'#ff2d78'},
+  150:{txt:'डेढ़ शतक! 🔥',sub:'अविश्वसनीय!',clr:'#a855f7'},
+  200:{txt:'दोहरा शतक! 🌟',sub:'महान पारी!',clr:'#22c55e'},
+  250:{txt:'ढाई सौ! ⚡',sub:'ऐतिहासिक पारी!',clr:'#06b6d4'},
+  300:{txt:'तिहरा शतक! 👑',sub:'अद्भुत! किंवदंती!',clr:'#f59e0b'},
+};
+function getMilestoneText(m){return MILESTONE_TEXT[m]||{txt:m+' रन! 🔥',sub:'शानदार बल्लेबाज़ी!',clr:'#f7c948'};}
+
+function drawMilestone(){
+  if(!batRaise||batRaiseT<=0)return;
+  const cfg=getMilestoneText(batRaiseMilestone);
+  const t=batRaiseT;
+  // Entrance: scale in over 0.4s, hold, fade after 2.2s
+  const sc=Math.min(t/0.4,1);
+  const fa=t>2.2?1-(t-2.2)/0.6:1;
+  if(fa<=0)return;
+  const cy=180;
+  // Radial glow behind text
+  X.save();X.globalAlpha=fa*0.35;
+  X.fillStyle=radGrad(W/2,cy,5,W/2,cy,120,[0,cfg.clr,1,'rgba(0,0,0,0)']);
+  dot(W/2,cy,120);
+  X.restore();
+  // Text
+  X.save();X.globalAlpha=fa;X.translate(W/2,cy);X.scale(sc,sc);
+  glowRect(-120,-38,240,76,16,cfg.clr,12);
+  X.fillStyle='rgba(10,10,30,0.8)';rr(-120,-38,240,76,16);
+  X.strokeStyle=cfg.clr;X.lineWidth=2;rrs(-120,-38,240,76,16);
+  // Score milestone number
+  X.fillStyle=cfg.clr;X.font='800 42px "Baloo 2"';X.textAlign='center';
+  glowDot(0,4,25,cfg.clr);X.fillText(cfg.txt,0,12);
+  // Sub text
+  X.font='700 15px Teko';X.fillStyle='#fff';X.fillText(cfg.sub,0,32);
+  X.restore();
+  // Sparkle particles around batsman during raise
+  if(t>0.3&&t<2.5){
+    const sp=Math.sin(T*15)*0.5+0.5;
+    X.globalAlpha=sp*fa*0.7;
+    for(let i=0;i<6;i++){
+      const a=PI2/6*i+T*2,r=30+Math.sin(T*4+i)*10;
+      X.fillStyle=cfg.clr;dot(BAT_X+Math.cos(a)*r,BAT_Y-20+Math.sin(a)*r*0.5,1.5+Math.sin(T*8+i)*1);
+    }
+    X.globalAlpha=1;
+  }
+}
+
+function drawGameOver(){
+  if(gameState!=='gameover')return;
+  const t=Math.min(gameOverT*2,1);
+  const isInnings=dismissal==='innings';
+  X.fillStyle=`rgba(0,0,0,${0.5*t})`;X.fillRect(0,0,W,H);
+  const cardH=isInnings?280:220;
+  const cy=H*0.42+100*(1-t);
+  X.save();X.translate(W/2,cy);X.scale(t,t);
+  X.fillStyle='rgba(10,10,30,0.92)';rr(-140,-100,280,cardH,20);
+  X.strokeStyle=isInnings?'#22c55e':C.gold;X.lineWidth=2;rrs(-140,-100,280,cardH,20);
+  X.font='800 42px "Baloo 2"';X.textAlign='center';
+  if(isInnings){
+    X.fillStyle='#22c55e';X.fillText('🎉 नॉट आउट! 🎉',0,-55);
+    X.fillStyle='rgba(255,255,255,0.8)';X.font='600 15px "Baloo 2"';
+    X.fillText('आपने इस मैच की सभी '+MAX_BALLS+' गेंदें',0,-28);
+    X.fillText('खेल लीं... बधाई हो! 🏏',0,-10);
+  }else{
+    X.fillStyle='#ef4444';
+    X.fillText(dismissal==='caught'?'कैच आउट!':'बोल्ड!',0,-55);
+  }
+  X.fillStyle='#fff';X.font='700 16px "Baloo 2"';X.fillText('फाइनल स्कोर',0,isInnings?18:8);
+  X.fillStyle=C.gold;X.font='800 44px "Baloo 2"';X.fillText(score,0,isInnings?62:52);
+  const goSR=getSR();
+  X.fillStyle='rgba(255,255,255,0.5)';X.font='700 13px Teko';
+  X.fillText(ballsFaced+'/'+MAX_BALLS+' बॉल  |  SR '+goSR,0,isInnings?82:72);
+  const rp=0.5+Math.sin(T*3)*0.5;
+  const btnY=isInnings?120:108;
+  X.globalAlpha=gameOverT>0.5?0.4+rp*0.6:0;X.fillStyle=C.gold;X.font='600 18px "Baloo 2"';
+  X.fillText('दोबारा खेलें 🔄',0,btnY);X.restore();
+}
+
+// ═══ LOTTERY SELECTOR ═══
+function drawLotteryCard(){
+  const cy=280;
+  X.save();
+  X.fillStyle='rgba(0,0,10,0.45)';X.fillRect(0,cy-50,W,100);
+  X.font='800 24px Teko';
+  const d=DELS[lotIdx%DELS.length];
+  const nameW=X.measureText(d.name).width;
+  const bg=getBadge(d,false);
+  const cardW=Math.max(160,nameW+40),cardH=62,hw=cardW/2,hh=cardH/2;
+  X.save();X.translate(W/2,cy);
+  if(lotSettled){glowRect(-hw,-hh,cardW,cardH,14,d.color,10);}
+  X.fillStyle='rgba(10,10,30,0.92)';rr(-hw,-hh,cardW,cardH,14);
+  X.strokeStyle=d.color;X.lineWidth=2.5;rrs(-hw,-hh,cardW,cardH,14);
+  X.fillStyle=d.color;rr(-hw+2,-hh+2,cardW-4,4,[12,12,0,0]);
+  X.fillStyle='#fff';X.font='800 24px Teko';X.textAlign='center';
+  X.fillText(d.name,0,0);
+  X.fillStyle=d.color;rr(-hw+10,hh-24,bg.w,18,9);
+  X.fillStyle='#fff';X.font='700 12px Teko';X.textAlign='center';
+  X.fillText(bg.text,-hw+10+bg.w/2,hh-10);
+  X.fillStyle=d.color;X.font='800 18px Teko';X.textAlign='right';
+  X.fillText(getSpeedText(d,true),hw-10,hh-9);
+  X.restore();
+  // Arrows
+  const ac=lotSettled?DELS[lotFinal].color:'rgba(255,255,255,0.4)';
+  X.fillStyle=ac;
+  [[cy-hh-6,-1],[cy+hh+6,1]].forEach(([ay,dir])=>{
+    X.beginPath();X.moveTo(W/2-6,ay);X.lineTo(W/2+6,ay);X.lineTo(W/2,ay+dir*5);X.closePath();X.fill();
+  });
+  X.restore();
+}
+
+function drawDeliveryBanner(){
+  const d=wasMystery?mysteryDel:curDel;
+  X.save();X.globalAlpha=Math.min(phaseT*5,1);
+  const bx=W/2,by=48;
+  const bnBg=getBadge(d,true);
+  X.font='800 20px Teko';const nw=X.measureText(d.name).width;
+  X.font='800 17px Teko';const sw=X.measureText(getSpeedText(d,false)).width;
+  const bw=Math.max(220,bnBg.w+nw+sw+52),bh=40;
+  glowRect(bx-bw/2,by-bh/2,bw,bh,20,d.color,8);
+  X.fillStyle='rgba(5,5,25,0.9)';rr(bx-bw/2,by-bh/2,bw,bh,20);
+  X.strokeStyle=d.color;X.lineWidth=2;rrs(bx-bw/2,by-bh/2,bw,bh,20);
+  X.fillStyle=d.color;rr(bx-bw/2+6,by-11,bnBg.w,22,11);
+  X.fillStyle='#fff';X.font='800 14px Teko';X.textAlign='center';
+  X.fillText(bnBg.text,bx-bw/2+6+(bnBg.w/2),by+4);
+  const nameX=bx-bw/2+bnBg.w+20;
+  X.fillStyle='#fff';X.font='800 20px Teko';X.textAlign='left';X.fillText(d.name,nameX,by+5);
+  X.fillStyle=d.color;X.font='800 17px Teko';X.textAlign='right';
+  X.fillText(getSpeedText(d,false),bx+bw/2-10,by+5);
+  X.restore();
+}
+
+function drawLottery(){
+  if(gameState!=='playing')return;
+  const showLot=phase==='lottery';
+  const showLabel=(phase==='runup'||phase==='bowling'||phase==='ballFlight')&&score<30;
+  if(!showLot&&!showLabel)return;
+  if(showLot) drawLotteryCard();
+  if(showLabel&&curDel) drawDeliveryBanner();
+}
+
+function drawCtrlBg(){X.fillStyle='rgba(0,0,0,0.4)';dot(0,0,15);X.strokeStyle='rgba(255,255,255,0.25)';X.lineWidth=1;circ(0,0,15);}
+
+function drawControls(){
+  const btnX=W-22;
+  // Audio button
+  X.save();X.translate(btnX,H-22);
+  drawCtrlBg();
+  X.fillStyle='#fff';
+  X.beginPath();X.moveTo(-5,-3);X.lineTo(-2,-3);X.lineTo(2,-6);X.lineTo(2,6);X.lineTo(-2,3);X.lineTo(-5,3);X.closePath();X.fill();
+  if(audioOn){
+    X.strokeStyle='#fff';X.lineWidth=1.2;
+    X.beginPath();X.arc(3.5,0,3.5,Math.PI*-0.35,Math.PI*0.35);X.stroke();
+    X.beginPath();X.arc(3.5,0,7,Math.PI*-0.3,Math.PI*0.3);X.stroke();
+  }else{
+    X.strokeStyle='#ef4444';X.lineWidth=1.8;
+    X.beginPath();X.moveTo(3,-5);X.lineTo(9,5);X.stroke();
+    X.beginPath();X.moveTo(9,-5);X.lineTo(3,5);X.stroke();
+  }
+  X.restore();
+  // Pause button
+  X.save();X.translate(btnX,H-58);
+  drawCtrlBg();
+  if(paused){
+    X.fillStyle='#fff';X.beginPath();X.moveTo(-4,-6);X.lineTo(-4,6);X.lineTo(6,0);X.closePath();X.fill();
+  }else{
+    X.fillStyle='#fff';X.fillRect(-4,-5,3.5,10);X.fillRect(1.5,-5,3.5,10);
+  }
+  X.restore();
+}
+
+function drawPauseOverlay(){
+  if(!paused)return;
+  X.fillStyle='rgba(0,0,0,0.5)';X.fillRect(0,0,W,H);
+  // Large centered play button
+  X.save();X.translate(W/2,H/2);
+  const p=1+Math.sin(T*3)*0.04;
+  X.scale(p,p);
+  X.fillStyle=goldBtnGrad(0,0,50);
+  dot(0,0,50);
+  X.strokeStyle='#fff';X.lineWidth=3;circ(0,0,50);
+  // ▶ triangle
+  X.fillStyle='#fff';X.beginPath();X.moveTo(-14,-18);X.lineTo(-14,18);X.lineTo(20,0);X.closePath();X.fill();
+  X.restore();
+}
+
+function drawMenu(){
+  if(gameState!=='menu')return;
+  X.fillStyle='rgba(0,0,0,0.55)';X.fillRect(0,0,W,H);
+  const t=Math.min(menuT*2,1);
+  X.save();X.translate(W/2,H*0.4);X.scale(t,t);
+  X.fillStyle='#fff';X.font='800 48px "Baloo 2"';X.textAlign='center';
+  glowDot(0,-45,30,C.gold);X.fillText('🏏 DBPL',0,-45);
+  glowDot(0,0,20,C.gold);
+  X.fillStyle=C.gold;X.font='800 28px "Baloo 2"';X.fillText('DB प्रीमियर लीग 2026',0,0);
+  X.fillStyle='rgba(255,255,255,0.65)';X.font='600 15px "Baloo 2"';X.fillText('बैट के पास बॉल के आते ही बटन दबाएं',0,30);
+  const p=1+Math.sin(T*3)*0.03;X.save();X.scale(p,p);
+  X.fillStyle=goldBtnGrad(0,0,40,3);
+  dot(0,130,40);
+  X.strokeStyle='#fff';X.lineWidth=2.5;circ(0,130,40);
+  X.fillStyle='#fff';X.beginPath();X.moveTo(-10,118);X.lineTo(-10,142);X.lineTo(14,130);X.closePath();X.fill();X.restore();
+  X.fillStyle='rgba(255,255,255,0.45)';X.font='600 13px "Baloo 2"';X.fillText('टैप करें और खेलें',0,185);
+  X.restore();
+}
+
+function drawVignette(){
+  X.fillStyle=radGrad(W/2,H*0.4,H*0.15,W/2,H*0.4,H*0.55,[0,'rgba(0,0,0,0)',1,'rgba(0,0,0,0.15)']);
+  X.fillRect(0,0,W,H);
+}
+
+function drawTimingZone(){
+  if(phase!=='ballFlight'||swingActive||tappedThisBall||ballT<0.4)return;
+  const p=0.4+Math.sin(T*8)*0.3;
+  const col=canHit?`rgba(34,197,94,${p*0.5})`:`rgba(255,200,50,${p*0.15})`;
+  X.strokeStyle=col;X.lineWidth=canHit?2.5:1;
+  X.beginPath();X.ellipse(W/2,BAT_Y+30,45,9,0,0,PI2);X.stroke();
+  if(canHit){X.fillStyle=`rgba(34,197,94,${p*0.05})`;oval(W/2,BAT_Y+30,45,9);}
+}
+
+// ═══ BUILD RENDER CACHES (P2-P4 — run once at startup) ═══
+function buildRenderCaches(){
+  const mainX=X;
+
+  // P3: Floodlights (fully static — poles, bulbs, glow, light cones)
+  const fl=mkOC(W,H);X=fl.ctx;
+  // Inline floodlight draw (identical to drawFloodlights but runs once)
+  FLOODLIGHTS.forEach(f=>{
+    X.fillStyle='#3a3a48';X.fillRect(f.x-1,f.y,2,f.pole);
+    X.fillStyle='#4a4a58';X.fillRect(f.x-f.bar[0],f.y-2,f.bar[1],3);
+    X.fillStyle='#ffe89a';f.bulbs.forEach(bx=>dot(f.x+bx,f.y,f.bsz));
+    X.fillStyle=radGrad(f.x,f.y,1,f.x,f.y,f.glow,[0,'rgba(247,201,72,0.4)',1,'rgba(247,201,72,0)']);
+    dot(f.x,f.y,f.glow);
+  });
+  X.globalAlpha=0.02;X.fillStyle='#f7c948';
+  X.beginPath();X.moveTo(25,95);X.lineTo(120,450);X.lineTo(280,450);X.closePath();X.fill();
+  X.beginPath();X.moveTo(365,95);X.lineTo(120,450);X.lineTo(280,450);X.closePath();X.fill();
+  X.globalAlpha=1;
+  X=mainX;_ocFlood=fl.c;
+
+  // P2: Idle crowd (150+ entities — draw once, blit every non-celebration frame)
+  const cr=mkOC(W,H);X=cr.ctx;
+  drawCrowd(155,false);
+  X=mainX;_ocCrowdIdle=cr.c;
+
+  // P6: Stars (base dots — twinkle handled via globalAlpha overlay)
+  const st=mkOC(W,GND_TOP+20);X=st.ctx;
+  X.fillStyle='#fff';
+  STARS.forEach(([sx,sy])=>dot(sx,sy,0.8));
+  X=mainX;_ocStars=st.c;
+}
+buildRenderCaches();
+
+// ═══ MAIN RENDER ═══
+function drawFld(i){drawFielder(fld[i].x,fld[i].y,C.rcb,chaserIdx===i,i);}
+function render(){
+  update();X.clearRect(0,0,W,H);
+  // #1 Base fill — prevents black when camera pans up on SIX
+  X.fillStyle=C.grass;X.fillRect(0,0,W,H);
+  X.save();
+  X.translate(shake*(Math.random()-.5)*2,shake*(Math.random()-.5)*2+camY);
+  drawSky();drawFloodlights();drawScoreboard();drawStands();drawOutfield();drawPitch();
+  drawFld(4);drawFld(5);
+  drawStumps(W/2,STB_Y,0.55,false);
+  drawFld(2);drawFld(3);
+  drawBowler();
+  drawFld(0);drawFld(1);
+  drawBall();drawHitBall();drawTimingZone();
+  drawStumps(W/2,STS_Y,1.8,phase==='bowled');
+  drawBatsman();
+  drawVignette();X.restore();
+  drawBalloons();drawParticlesFx();drawCelebration();drawDismissalText();drawMilestone();drawBatBtn();drawLottery();drawGameOver();drawMenu();drawControls();drawPauseOverlay();
+  requestAnimationFrame(render);
+}
+render();
+</script>
+</body>
+</html>
